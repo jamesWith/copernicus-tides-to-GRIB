@@ -4,3 +4,4 @@ NWSHELF_ANALYSISFORECAST_PHY_004_013
 __pycache__
 tidal_currents.grib2
 .DS_Store
+.python-version
