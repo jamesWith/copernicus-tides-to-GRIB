@@ -1,6 +1,8 @@
 # 🌊 Tide Current Converter
 
-This project downloads high-resolution tidal current forecast data from the **Copernicus Marine Service**, converts the U/V vector components to knots (from m/s), and exports the result to a valid **GRIB2** file. It is designed for use in marine navigation systems and chartplotters.
+This project downloads high-resolution tidal current forecast data from the **Copernicus Marine Service**, converts the U/V vector components to knots (from m/s), and exports the result to a valid **GRIB2** file. While designed to help route plotting it should not be relied upon for navigation, double check the data before using it for any critical applications.
+
+All credit for the data used goes to [Copernicus Marine Service (CMEMS)](https://marine.copernicus.eu/).
 
 ---
 
@@ -9,7 +11,7 @@ This project downloads high-resolution tidal current forecast data from the **Co
 Clone the repository using:
 
 ```bash
-git clone https://github.com/jamesWith/tide-current-converter.git
+git clone https://github.com/jamesWith/copernicus-tides-to-GRIB.git
 cd tide-current-converter
 ```
 
@@ -58,31 +60,46 @@ The script will then use this to authenticate future requests so you should only
 
 ## 🚀 Usage
 
-Run the tide converter script via Poetry:
+## 🚀 Usage
+
+After installing the package (via `poetry run` or as a CLI tool), you can run the script like this:
 
 ```bash
-poetry run python Copernicus-tides-to-GRIB.py
+poetry run tideconvert [OPTIONS]
 ```
 
-By default, it will:
-- Download the dataset `cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i` for the **next 10 days**
-- Compute speed (knots) and bearing (degrees from north) from U/V current components
-- Save the result to a GRIB2 file named `tidal_currents.grib2`
+### 🔧 Command-line Options
+
+| Flag / Option                  | Description |
+|-------------------------------|-------------|
+| `-t`, `--temporal-resolution` | Time between data points. Accepts multiples of 15 minutes such as `'15m'`, `'30m'`, `'1h'`, `'6h'`, etc.<br>**Default:** `15m` |
+| `-s`, `--spatial-resolution-factor` | Integer factor to reduce spatial resolution. Use `2` to skip every other lat/lon point, `3` to skip every two, etc.<br>**Default:** `1` (full resolution) |
+| `-d`, `--days`                | Number of forecast days to download (**1–10**).<br>**Default:** `5` |
+| `-i`, `--dataset-id`          | Dataset ID to download from Copernicus Marine. Override this if using a different product.<br>**Default:** `cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i` |
+| `-l`, `--low-data`            | Enable low-data mode to reduce bandwidth usage and only download new forecasts.<br>**Note:** _Not yet implemented_ |
+| `-o`, `--output-dir`          | Directory to save downloaded forecasts and GRIB output.<br>**Default:** current working directory |
+| `-g`, `--grib-filename`       | Filename for the output GRIB2 file.<br>**Default:** `tidal_currents.grib2` |
+| `-c`, `--credentials-dir`     | Directory where `.copernicusmarine/` credentials are stored. Used to authenticate with CMEMS.<br>**Default:** `~` (user home) |
+| `-k`, `--keep-forecasts`      | Retain forecast NetCDF files after conversion to GRIB.<br>**Note:** _In low data mode only forecasts in the past are deleted to save redownloading them._ <br>**Default:** _Files are deleted after use_ |
+| `-v`, `--verbose`             | Enable verbose/debug output.<br>**Note:** _Not yet implemented_ |
 
 ---
 
-## 🧾 Input & Output
+### ✅ Example
 
-### 📥 Input
-- **Dataset:** `cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i`
-- **Resolution:** 0.027°, every 15 minutes
-- **Variables:** `uo` (eastward), `vo` (northward)
+```bash
+tideconvert \
+  --days 3 \
+  --temporal-resolution 30m \
+  --spatial-resolution-factor 2 \
+  --output-dir ./data \
+  --grib-filename mycurrents.grib2 \
+  --keep-forecasts
+```
 
-### 📤 Output
-- `tidal_currents.grib2`
-  - 2D grid of **current speed in knots** and **bearing in degrees**
-  - One GRIB message per field per time step
-  - Correctly georeferenced with `regular_ll` grid type
+This example downloads 3 days of data at 30-minute intervals, skips every other grid point, writes output to `./data/mycurrents.grib2`, and keeps all downloaded NetCDF files.
+```
+
 
 ---
 
@@ -90,17 +107,12 @@ By default, it will:
 
 This project uses the following Python libraries:
 
-- `copernicusmarine`
+- `os`
+- `argparse`
 - `xarray`
-- `numpy`
-- `pandas`
-- `scipy`
-- `cfgrib`
+- `datetime`
+- `copernicusmarine`
 - `eccodes`
-- `pyproj`
-- `climetlab`
-- `pygrib` (optional)
-- `cdsapi` (unused currently)
 
 To see all versions, check [`pyproject.toml`](./pyproject.toml).
 
@@ -122,13 +134,9 @@ brew install eccodes
 
 ## 🧠 Future Work / TODO
 
-- [ ] Parameterize time window and spatial bounding box via CLI flags
-- [ ] Add support for vertical layers (e.g., depth-specific currents)
-- [ ] Add unit tests for speed/bearing calculation
-- [ ] Write GRIB2 using pure `eccodes` instead of climetlab
-- [ ] Dockerize the tool for portable deployment
-- [ ] Optionally export to NetCDF, CSV, or GeoTIFF
-- [ ] Add command-line interface or GUI
+- [ ] Enable support for low-data mode to reduce bandwidth usage.
+- [ ] Implement verbose/debug output.
+- [ ] Enable useage with other Copernicus Marine datasets.
 
 ---
 
