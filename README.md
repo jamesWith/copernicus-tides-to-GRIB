@@ -60,7 +60,7 @@ The script will then use this to authenticate future requests so you should only
 
 ## 🚀 Usage
 
-After installing the package (via `poetry run` or as a CLI tool), you can run the script like this:
+After downloading the repository and installing dependencies, you can run the script using Poetry:
 
 ```bash
 poetry run tideconvert [OPTIONS]
