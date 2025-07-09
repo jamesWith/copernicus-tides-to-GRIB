@@ -60,8 +60,6 @@ The script will then use this to authenticate future requests so you should only
 
 ## 🚀 Usage
 
-## 🚀 Usage
-
 After installing the package (via `poetry run` or as a CLI tool), you can run the script like this:
 
 ```bash
