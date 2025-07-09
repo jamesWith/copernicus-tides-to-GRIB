@@ -1,5 +1,6 @@
 tide_forecasts_to_download.txt
 current_forecast_files.txt
 NWSHELF_ANALYSISFORECAST_PHY_004_013
+__pycache__
 tidal_currents.grib2
 .DS_Store
