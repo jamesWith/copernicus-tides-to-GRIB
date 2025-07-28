@@ -86,6 +86,7 @@ def download_files(args, to_download_list_path, current_forecast_file_list_path)
     # change file name to path name and just get file name for get request
 
     # Get the list of files to download
+    # Documentation: https://toolbox-docs.marine.copernicus.eu/en/stable/python-interface.html
     copernicusmarine.get(
         dataset_id=args.dataset_id,
         regex=date_regex,
@@ -154,8 +155,8 @@ def collate_files(current_forecast_list):
         uo = ds["uo"]  # eastward current [m/s]
         vo = ds["vo"]  # northward current [m/s]
 
-        u_knots = uo * 1.94384  # convert to knots
-        v_knots = vo * 1.94384  # convert to knots
+        u_knots = uo / 1.94384  # convert to knots
+        v_knots = vo / 1.94384  # convert to knots
 
         u_current_ds_list.append(u_knots)
         v_current_ds_list.append(v_knots)
@@ -239,7 +240,9 @@ def main():
         codes_set(gid, "parameterCategory", 1)  # Currents
         codes_set(gid, "parameterNumber", 2 if short_name == "ocu" else 3)  # Speed or direction
         # codes_set(gid, "parameterNumber", 1 if short_name == "spc" else 2)  # Speed or direction
-        
+        # Documentation for codes: https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-10-1.shtml
+
+
         # Leaving in this here as a reminder programs and packages are conflicted on some current "shortName" values
         # qtVlm couldnt read "spc" or "dirc", but xyGrib could. Eccodes doesnt recognise "ocu", "ocv" or "uogrd", "vogrd".
         # Ignoring the "shortName", and just using the parameterNumber that refers U-current and V-current.
