@@ -60,7 +60,10 @@ def check_credentials(credentials_dir):
     credentials_path = os.path.expanduser(os.path.join(credentials_dir, ".copernicusmarine", ".copernicusmarine-credentials"))
     if not os.path.exists(credentials_path):
         print("Credentials file not found. Please log in to Copernicus Marine.")
-        copernicusmarine.login()
+        try:
+            copernicusmarine.login()
+        except:
+            print("Login Failed. Please try again.")
     else:
         print("Credentials file found. Proceeding with download.")
 
@@ -122,7 +125,7 @@ def download_files(args, to_download_list_path, current_forecast_file_list_path)
         for file in downloads_list:
             print(file)
         confirm = input("Do you want to download these files? (yes/no): ").strip().lower()
-        if confirm != "yes":
+        if confirm not in ["yes", "y", "YES", "Y"]:
             print("Download cancelled.")
             exit()
 
