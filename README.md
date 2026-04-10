@@ -72,13 +72,14 @@ poetry run tideconvert [OPTIONS]
 |-------------------------------|-------------|
 | `-t`, `--temporal-resolution` | Time between data points. Accepts multiples of 15 minutes such as `'15m'`, `'30m'`, `'1h'`, `'6h'`, etc.<br>**Default:** `15m` |
 | `-s`, `--spatial-resolution-factor` | Integer factor to reduce spatial resolution. Use `2` to skip every other lat/lon point, `3` to skip every two, etc.<br>**Default:** `1` (full resolution) |
-| `-d`, `--days`                | Number of forecast days to download (**1–10**).<br>**Default:** `5` |
+| `-d`, `--days`                | Number of forecast days to download (**1–10**).<br>**Default:** `4` |
 | `-i`, `--dataset-id`          | Dataset ID to download from Copernicus Marine. Override this if using a different product.<br>**Default:** `cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i` |
 | `-l`, `--low-data`            | Enable low-data mode to reduce bandwidth usage and only download new forecasts.<br>**Note:** _Not yet implemented_ |
 | `-o`, `--output-dir`          | Directory to save downloaded forecasts and GRIB output.<br>**Default:** current working directory |
 | `-g`, `--grib-filename`       | Filename for the output GRIB2 file.<br>**Default:** `tidal_currents.grib2` |
 | `-c`, `--credentials-dir`     | Directory where `.copernicusmarine/` credentials are stored. Used to authenticate with CMEMS.<br>**Default:** `~` (user home) |
-| `-k`, `--keep-forecasts`      | Retain forecast NetCDF files after conversion to GRIB.<br>**Note:** _In low data mode only forecasts in the past are deleted to save redownloading them._ <br>**Default:** _Files are deleted after use_ |
+| `-r`, `--delete-forecasts`      | Delete forecast NetCDF files after conversion to GRIB.<br>**Default:** _Forecasts are kept. Forecasts entirely in the past are always cleaned up on the next run._ |
+| `-a`, `--area`                | Geographic area to download. Available: `chnl`, `irish`, `north`, `biscay`.<br>**Default:** `chnl` (English Channel) |
 | `-v`, `--verbose`             | Enable verbose/debug output.<br>**Note:** _Not yet implemented_ |
 
 ---
@@ -92,10 +93,10 @@ tideconvert \
   --spatial-resolution-factor 2 \
   --output-dir ./data \
   --grib-filename mycurrents.grib2 \
-  --keep-forecasts
+  --delete-forecasts
 ```
 
-This example downloads 3 days of data at 30-minute intervals, skips every other grid point, writes output to `./data/mycurrents.grib2`, and keeps all downloaded NetCDF files.
+This example downloads 3 days of data at 30-minute intervals, skips every other grid point, writes output to `./data/mycurrents.grib2`, and deletes the forecast NetCDF files after conversion.
 ```
 
 

@@ -20,7 +20,19 @@ import argparse
 import xarray as xr
 from datetime import datetime, timedelta
 import copernicusmarine
-from eccodes import *
+from eccodes import codes_grib_new_from_samples, codes_set, codes_set_values, codes_write, codes_release
+import re
+import logging
+import sys
+
+# Area bounds: {area_code: (min_lat, max_lat, min_lon, max_lon)}
+AREA_BOUNDS = {
+    "chnl": (48, 52, -7, 0),       # English Channel / Celtic Sea
+    "irish": (50, 56, -12, -4),    # Irish Sea / Celtic Sea
+    "north": (51, 62, -5, 10),     # North Sea
+    "biscay": (43, 48, -10, 0),    # Bay of Biscay
+    "salcombe-lizard": (49.887557, 50.412018, -5.339355, -3.460693),  # Salcombe to Lizard coordinates
+}
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -32,24 +44,30 @@ def parse_args():
     parser.add_argument("-s", "--spatial-resolution-factor", type=int,
                         default=1,
                         help="Factor to adjust spatial resolution. Default is 1 (no change). Use 2 for half resolution.")
-    parser.add_argument("-d", "--days", type=int, default=5,
-                        help="Number of forecast days. Default is 5 days. Must be between 1 and 10.")
+    parser.add_argument("-d", "--days", type=int, default=4,
+                        help="Number of forecast days. Default is 4 days. Must be between 1 and 10.")
     parser.add_argument("-i", "--dataset-id", type=str,
-                        default="cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i",
-                        help="Dataset ID to download from Copernicus Marine. Default is 'cmems_mod_nws_phy_anfc_0.027deg-2D_PT15M-i'.")
+                        default="cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i",
+                        help="Dataset ID to download from Copernicus Marine. Default is 'cmems_mod_nws_phy-cur_anfc_1.5km-2D_PT15M-i'.")
     parser.add_argument("-l", "--low-data", action="store_true",
                         help="Enable low-data mode. NOT YET IMPLEMENTED")
-    parser.add_argument("-o", "--output-dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
+    parser.add_argument("-o", "--output-dir", type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_folder"),
                         help="Directory for forecast files and grib output")
     parser.add_argument("-g", "--grib-filename", type=str, default="tidal_currents.grib2",
                         help="Filename for the output GRIB file. Default is 'tidal_currents.grib2'.")
     parser.add_argument("-c", "--credentials-dir", type=str, default="~",
                         help="Directory for Copernicus Marine credentials. Will look for '/.copernicusmarine/' folder in this directory, which should contain '.copernicusmarine-credentials.'")
-    parser.add_argument("-k", "--keep-forecasts", action="store_true",
-                        help="Don't delete forecast NetCDFs files after GRIB export")
+    parser.add_argument("-r", "--delete-forecasts", action="store_true",
+                        help="Delete forecast NetCDFs files after GRIB export")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Verbose output. NOT YET IMPLEMENTED")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="Assume yes for prompts (non-interactive)")
+    parser.add_argument("-a", "--area", type=str, default="chnl",
+                        choices=list(AREA_BOUNDS.keys()),
+                        help=f"Area to download data for. Available: {', '.join(AREA_BOUNDS.keys())}")
     return parser.parse_args()
+
 
 
 def check_credentials(credentials_dir):
@@ -59,27 +77,167 @@ def check_credentials(credentials_dir):
     """
     credentials_path = os.path.expanduser(os.path.join(credentials_dir, ".copernicusmarine", ".copernicusmarine-credentials"))
     if not os.path.exists(credentials_path):
-        print("Credentials file not found. Please log in to Copernicus Marine.")
+        logging.info("Credentials file not found. Attempting interactive login.")
         try:
             copernicusmarine.login()
-        except:
-            print("Login Failed. Please try again.")
+            logging.info("Login succeeded; credentials stored.")
+        except Exception as e:
+            logging.error("Login failed: %s", e)
+            raise
     else:
-        print("Credentials file found. Proceeding with download.")
+        logging.debug("Credentials file found at %s", credentials_path)
 
-def download_files(args, to_download_list_path, current_forecast_file_list_path):
+def download_files_using_subset(args):
+    # Look up area bounds
+    if args.area not in AREA_BOUNDS:
+        raise ValueError(f"Unknown area '{args.area}'. Available areas: {', '.join(AREA_BOUNDS.keys())}")
+    min_lat, max_lat, min_lon, max_lon = AREA_BOUNDS[args.area]
+
+    # Get current time in ISO format for dateutil parsing
+    request_start_date = datetime.now().date()
+    logging.info("Start time: %s", request_start_date)
+    request_end_date = (datetime.now().date() + timedelta(days=args.days))
+    logging.info("End time: %s", request_end_date)
+
+    dash_range_re = re.compile(r"(\d{4}-\d{2}-\d{2})-(\d{4}-\d{2}-\d{2})")
+    ymd_re = re.compile(r"(\d{8})")
+
+    forecast_start_end_dates = []
+
+    existing_files = [f for f in os.listdir(args.output_dir) if f.endswith(".nc")]
+    for file in existing_files:
+        # Prefer dash-separated start-end pattern if present (e.g. 2026-04-09-2026-04-15)
+        m = dash_range_re.search(file)
+        if m:
+            file_start_date = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+            file_end_date = datetime.strptime(m.group(2), "%Y-%m-%d").date()
+        else:
+            # Fallback: look for any 8-digit YYYYMMDD tokens in the filename
+            matches = ymd_re.findall(file)
+            if len(matches) >= 2:
+                dts = [datetime.strptime(x, "%Y%m%d").date() for x in matches]
+                file_start_date = min(dts)
+                file_end_date = max(dts)
+            elif len(matches) == 1:
+                file_start_date = datetime.strptime(matches[0], "%Y%m%d").date()
+                file_end_date = file_start_date
+            else:
+                # no date information found -> skip
+                continue
+
+        # Delete file if it is in the past
+        if file_end_date < datetime.now().date():
+            os.remove(os.path.join(args.output_dir, file))
+            print(f"Deleted file: {file}")
+            continue
+
+        # Add the start and end date to the list
+        forecast_start_end_dates.append((file_start_date, file_end_date, file))
+
+    # Sort the forecast by start date
+    forecast_start_end_dates = sorted(forecast_start_end_dates, key=lambda x: x[0])
+    logging.info("Found %d existing forecast files.", len(forecast_start_end_dates))
+    logging.debug("Forecast start and end dates:")
+    for start_date, end_date, file in forecast_start_end_dates:
+        logging.debug("File: %s Start: %s End: %s", file, start_date, end_date)
+
+    # Create array to hold dates and file names for useful forecasts
+    useful_forecasts_files = []
+
+    # Find which forecasts are useful (consecutive forecasts)
+    previous_end_date = None
+    for forecast_start_date, forecast_end_date, file in forecast_start_end_dates:
+        if previous_end_date is None:
+            # if it is the earliest forecast
+            if forecast_start_date <= request_start_date:
+                # If it starts before today, add it to the useful forecasts and change the previous end date
+                useful_forecasts_files.append(os.path.join(args.output_dir, file))
+                previous_end_date = forecast_end_date
+            else:
+                # If the first forecast starts after today, break and get all new forecasts
+                break
+        else:
+            # If this is is not the first forecast, check if it is consecutive with the previous useful forecast
+            if forecast_start_date == previous_end_date:
+                # If it is consecutive, add it to the useful forecasts
+                useful_forecasts_files.append(os.path.join(args.output_dir, file))
+                previous_end_date = forecast_end_date
+    
+    # Set end of current forecasts to last useful forecast end date
+    # If there are no useful forecasts, set it to the start date of the request
+    current_forecasts_end_date = previous_end_date if previous_end_date is not None else request_start_date
+
+    if current_forecasts_end_date < request_end_date:
+        # If the current forecasts end date is before the requested end date, we need to download more forecasts
+        download_info = copernicusmarine.subset(
+            dataset_id=args.dataset_id,
+            skip_existing=True,
+            start_datetime=current_forecasts_end_date.isoformat(),
+            end_datetime=request_end_date.isoformat(),
+            minimum_latitude=min_lat,
+            maximum_latitude=max_lat,
+            minimum_longitude=min_lon,
+            maximum_longitude=max_lon,
+            output_directory=args.output_dir,
+            netcdf_compression_level=9,
+            dry_run=True
+        )
+        logging.info("Download info: filename=%s output_dir=%s size_mb=%s transfer_mb=%s", download_info.filename, download_info.output_directory, download_info.file_size, download_info.data_transfer_size)
+        logging.info("Start time: %s End time: %s", download_info.coordinates_extent[2].minimum, download_info.coordinates_extent[2].maximum)
+
+        if not getattr(args, "yes", False):
+            confirm = input("Do you want to download this data? (yes/no): ").strip().lower()
+            if confirm not in ["yes", "y", "YES", "Y"]:
+                logging.info("Download cancelled.")
+                sys.exit(0)
+        else:
+            logging.info("Auto-confirmed download via --yes flag.")
+        
+        download_info = copernicusmarine.subset(
+            dataset_id=args.dataset_id,
+            skip_existing=True,
+            start_datetime=current_forecasts_end_date.isoformat(),
+            end_datetime=request_end_date.isoformat(),
+            minimum_latitude=min_lat,
+            maximum_latitude=max_lat,
+            minimum_longitude=min_lon,
+            maximum_longitude=max_lon,
+            output_directory=args.output_dir,
+            netcdf_compression_level=9,
+            dry_run=False
+        )
+        useful_forecasts_files.append(os.path.join(args.output_dir, download_info.filename))
+    return useful_forecasts_files
+
+
+def download_files(args):
     """
     Get the list of files to download and the current forecast files, 
     And then download them.
     """
+
+    current_forecast_file_list_path = os.path.expanduser(os.path.join(args.output_dir, "current_forecast_files.txt"))
+    to_download_list_path = os.path.expanduser(os.path.join(args.output_dir, "tide_forecasts_to_download.txt"))
+
     # Generate the date range
     dates = [(datetime.now() + timedelta(days=i)).strftime("%Y%m%d") for i in range(args.days)]
 
-    print(f"Dates to download: {dates}")
 
-    # Create regex pattern
-    date_pattern = "|".join(dates)
-    date_regex = rf".*_({date_pattern})_.*FC.*\.nc$"
+    # Get current time in ISO format for dateutil parsing
+    start_time = datetime.now().isoformat()
+    end_time = (datetime.now() + timedelta(days=args.days)).isoformat()
+    logging.info("Start time: %s", start_time)
+    logging.info("End time: %s", end_time)
+    logging.info("Dates to download: %s", dates)
+
+    # Create regex pattern: accept both YYYYMMDD and YYYY-MM-DD variants so
+    # files with dashed dates are matched (e.g. 2026-04-09)
+    date_alts = []
+    for d in dates:
+        date_alts.append(d)
+        date_alts.append(f"{d[0:4]}-{d[4:6]}-{d[6:8]}")
+    date_pattern = "|".join(date_alts)
+    date_regex = rf".*({date_pattern}).*\.nc$"
 
     if os.path.exists(to_download_list_path):
         os.remove(to_download_list_path)
@@ -87,6 +245,14 @@ def download_files(args, to_download_list_path, current_forecast_file_list_path)
         os.remove(current_forecast_file_list_path)
 
     # change file name to path name and just get file name for get request
+
+    """
+    Get dates/times that user wants to download.
+    Look at downloaded files to see what is already there.
+    Adjust times to the gap between requested dates and existing files.
+    Get files using subset.
+
+    """
 
     # Get the list of files to download
     # Documentation: https://toolbox-docs.marine.copernicus.eu/en/stable/python-interface.html
@@ -121,13 +287,17 @@ def download_files(args, to_download_list_path, current_forecast_file_list_path)
     # Check user is happy to download the files
     # If the list is empty, exit
     if downloads_list != []:
-        print(f"Files to download:\n")
+        logging.info("Files to download:\n")
         for file in downloads_list:
-            print(file)
-        confirm = input("Do you want to download these files? (yes/no): ").strip().lower()
-        if confirm not in ["yes", "y", "YES", "Y"]:
-            print("Download cancelled.")
-            exit()
+            logging.info(file)
+        if not getattr(args, "yes", False):
+            confirm = input("Do you want to download these files? (yes/no): ").strip().lower()
+            if confirm not in ["yes", "y", "YES", "Y"]:
+                logging.info("Download cancelled.")
+                sys.exit(0)
+        else:
+            logging.info("Auto-confirmed download via --yes flag.")
+
 
     # Actually download the files 
     copernicusmarine.get(
@@ -139,33 +309,48 @@ def download_files(args, to_download_list_path, current_forecast_file_list_path)
     )
     return current_forecast_list
 
-def collate_files(current_forecast_list):
+def collate_files(current_forecast_list, args):
     u_current_ds_list = []
     v_current_ds_list = []
 
     for forecast_file in current_forecast_list:
-        # Load dataset
-        ds = xr.open_dataset(forecast_file)
+        # Load dataset and ensure resources are released promptly
+        with xr.open_dataset(forecast_file) as ds:
+            # Fill NaN values with 0 (consider masking in future)
+            ds = ds.fillna(0)
 
-        # Fill NaN values with 0
-        ds = ds.fillna(0)
+            # Make sure the data is in the correct order by latitude
+            if ds.latitude[0] < ds.latitude[-1]:
+                ds = ds.sortby("latitude", ascending=False)
 
-        # Make sure the data is in the correct order by latitude
-        if ds.latitude[0] < ds.latitude[-1]:
-            ds = ds.sortby("latitude", ascending=False)
+            # Calculate speed in knots and direction (bearing from north)
+            uo = ds["uo"].load()  # eastward current [m/s]
+            vo = ds["vo"].load()  # northward current [m/s]
 
-        # Calculate speed in knots and direction (bearing from north)
-        uo = ds["uo"]  # eastward current [m/s]
-        vo = ds["vo"]  # northward current [m/s]
+            u_knots = uo / 1.94384  # convert to knots
+            v_knots = vo / 1.94384  # convert to knots
 
-        u_knots = uo / 1.94384  # convert to knots
-        v_knots = vo / 1.94384  # convert to knots
-
-        u_current_ds_list.append(u_knots)
-        v_current_ds_list.append(v_knots)
+            # Append DataArrays with loaded data so dataset can be closed
+            u_current_ds_list.append(u_knots)
+            v_current_ds_list.append(v_knots)
 
     u_current_array = xr.concat(u_current_ds_list, dim="time")
     v_current_array = xr.concat(v_current_ds_list, dim="time")
+
+    # Crop to requested area bounds
+    min_lat, max_lat, min_lon, max_lon = AREA_BOUNDS[args.area]
+    # Latitude is descending (north→south), so slice high→low
+    u_current_array = u_current_array.sel(
+        latitude=slice(max_lat, min_lat),
+        longitude=slice(min_lon, max_lon)
+    )
+    v_current_array = v_current_array.sel(
+        latitude=slice(max_lat, min_lat),
+        longitude=slice(min_lon, max_lon)
+    )
+
+    Ni, Nj, Nt = len(u_current_array.longitude), len(u_current_array.latitude), len(u_current_array.time)
+    print(f"Cropped grid: {Ni} lon x {Nj} lat x {Nt} time steps")
 
     return u_current_array, v_current_array
 
@@ -195,36 +380,54 @@ def reduce_resolution(args, u_current_array, v_current_array):
 
 def main():
     args = parse_args()
-    args.output_dir = os.path.expanduser(args.output_dir).replace(".", os.path.dirname(os.path.abspath(__file__)))
+    # Configure logging
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    args.output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
+
+    # Validate CLI values
+    if not (1 <= args.days <= 10):
+        logging.error("Invalid --days value %s: must be between 1 and 10", args.days)
+        sys.exit(2)
+
+    # Validate temporal resolution format (e.g. '15m', '1h')
+    if not re.match(r"^\d+(m|h|d)$", args.temporal_resolution):
+        logging.error("Invalid --temporal-resolution '%s'. Expected formats like '15m', '1h', '1d'", args.temporal_resolution)
+        sys.exit(2)
     
     # Check output directory exists, if not create it
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
-        print(f"Created output directory: {args.output_dir}")
+        logging.info("Created output directory: %s", args.output_dir)
 
-    # Set current working directory to current directory
+    # Set current working directory to the project directory
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    check_credentials(args.credentials_dir)
+    # Check credentials (may raise on failure)
+    try:
+        check_credentials(args.credentials_dir)
+    except Exception:
+        logging.error("Unable to verify Copernicus Marine credentials; aborting.")
+        sys.exit(1)
 
-    current_forecast_file_list_path = os.path.expanduser(os.path.join(args.output_dir, "current_forecast_files.txt"))
-    to_download_list_path = os.path.expanduser(os.path.join(args.output_dir, "tide_forecasts_to_download.txt"))
+    try:
+        current_forecast_list = download_files_using_subset(args)
+    except Exception as e:
+        logging.warning("Subset download failed: %s", e)
+        logging.info("Falling back to file-based download...")
+        current_forecast_list = download_files(args)
 
-    current_forecast_list = download_files(args, to_download_list_path, current_forecast_file_list_path)
-
-    u_current_array, v_current_array = collate_files(current_forecast_list)
+    u_current_array, v_current_array = collate_files(current_forecast_list, args)
 
     u_current_array, v_current_array = reduce_resolution(args, u_current_array, v_current_array)
 
     north_lat, south_lat, west_long, east_long = float(u_current_array.latitude[0]), float(u_current_array.latitude[-1]), float(u_current_array.longitude[0]), float(u_current_array.longitude[-1])
     Ni, Nj = len(u_current_array.longitude), len(u_current_array.latitude)
     di, dj = float(u_current_array.longitude[1] - u_current_array.longitude[0]), abs(float(u_current_array.latitude[1] - u_current_array.latitude[0]))
-    
-    print(f"Area: {north_lat}, {west_long}, {south_lat}, {east_long}")
+    logging.info("Area: %s, %s, %s, %s", north_lat, west_long, south_lat, east_long)
 
     grib_path = os.path.expanduser(os.path.join(args.output_dir, args.grib_filename))
 
-    # Something to delete the file if it exists
+    # Delete the GRIB file if it alreadyexists
     if os.path.exists(grib_path):
         os.remove(grib_path)
 
@@ -272,14 +475,14 @@ def main():
         write_field(u_current_array.values[idx, :, :], "ocu", idx)
         write_field(v_current_array.values[idx, :, :], "ocv", idx)
 
-    if not args.keep_forecasts:
+    if args.delete_forecasts:
         # Delete the forecast NetCDF files
         for file in current_forecast_list:
             if os.path.exists(file):
                 os.remove(file)
-                print(f"Deleted file: {file}")
+                logging.info("Deleted file: %s", file)
             else:
-                print(f"File not found: {file}")
+                logging.warning("File not found: %s", file)
 
 if __name__ == "__main__":
     main()

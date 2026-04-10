@@ -1,4 +1,12 @@
-tide_forecasts_to_download.txt
+data_folder/*.nc
+data_folder/*.grib2
+data_folder/tidal_currents.grib2
+data_folder/*.grib
+.DS_Store
+__pycache__/
+.venv/
+venv/
+*.pyctide_forecasts_to_download.txt
 current_forecast_files.txt
 NWSHELF_ANALYSISFORECAST_PHY_004_013
 __pycache__
